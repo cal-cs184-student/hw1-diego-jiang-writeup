@@ -23,90 +23,442 @@
 			body {
 				font-family: 'Inter', sans-serif;
 			}
+			
+			figcaption {
+				font-size: 0.85em;
+				font-style: italic;
+				color: gray;
+			}
 		</style>
 	</head>
 	<body>
 		<div class="container">
 		<h1>CS184/284A Fall 2026 Homework 1 Write-Up</h1>
-		<div style="text-align: center;">Names: </div>
+		<div style="text-align: center;">Name: Diego Jiang </div>
 
 		<br>
 
-		Link to webpage: (TODO) <a href="https://cs184.eecs.berkeley.edu/fa26">cs184.eecs.berkeley.edu/fa26</a>
+		Link to webpage: <a href="https://cal-cs184-student.github.io/hw1-diego-jiang-writeup">cal-cs184-student.github.io/hw1-diego-jiang-writeup</a>
 		
 		<br>
 
-		Link to GitHub repository: (TODO) <a href="https://cs184.eecs.berkeley.edu/fa26">cs184.eecs.berkeley.edu/fa26</a>
-
-		<figure>
-			<img src="assets/lion.jpg" alt="Lion" style="width:50%"/>
-			<figcaption>You can add images with captions!</figcaption>
-		</figure>
+		Link to GitHub repository: <a href="https://github.com/cal-cs184-student/hw1-diego-jiang">github.com/cal-cs184-student/hw1-diego-jiang</a>
 
 		<!--
 		We've already added one heading per task, to make your write-up as navigable when grading. Please fit your write-up within these sections!
 		-->
 
 		<h2>Overview</h2>
-		Give a high-level overview of what you implemented in this homework. Think about what you've built as a whole. Share your thoughts on what interesting things you've learned from completing the homework.
+
+		<p>
+			In this assignment I built a rasterizer that renders SVG files with triangle rasterization,
+			supersampling antialiasing, hierarchical transforms, and texture mapping with mipmaps. Working
+			through each task gave me a ground-up understanding of how graphics operations work at the pixel
+			level. The edge function test for point-in-triangle was elegant in its simplicity, and seeing
+			supersampling smooth out jagged edges by approximating area coverage was satisfying. The most
+			interesting insight was realizing that supersampling, bilinear interpolation, and mipmapping all
+			address the same underlying sampling theory problem but at different points in the pipeline, with
+			very different performance tradeoffs.
+		</p>
 
 		<h2>Task 1: Drawing Single-Color Triangles</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
 
-		<p>Here is an example 2x2 gridlike structure using an HTML table. Each <b>tr</b> is a row and each <b>td</b> is a column in that row. You might find this useful for framing and showing your result images in an organized fashion.</p>
-		<div style="display: flex; flex-direction: column; align-items: center;">
-			<table style="width: 100%; text-align: center; border-collapse: collapse;">
-			  <tr>
-				<td style="text-align: center;">
-				  <img src="assets/lion.jpg" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-				<td style="text-align: center;">
-				  <img src="assets/lion.jpg" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-			  </tr>
-			  <tr>
-				<td style="text-align: center;">
-				  <img src="assets/lion.jpg" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-				<td style="text-align: center;">
-				  <img src="assets/lion.jpg" width="400px"/>
-				  <figcaption>Caption goes here.</figcaption>
-				</td>
-			  </tr>
+		<p>
+			To rasterize a triangle defined by three vertices (P0, P1, P2), I use the <b>three-line edge function test</b>.
+			A triangle is the intersection of three half-planes, where each edge of the triangle defines a dividing line.
+			For each edge from vertex Pi to P(i+1), the edge function is:
+		</p>
+
+		\[ L_i(x, y) = -(x - X_i) \cdot dY_i + (y - Y_i) \cdot dX_i \]
+
+		<p>
+			where \( dX_i = X_{i+1} - X_i \) and \( dY_i = Y_{i+1} - Y_i \). This is the dot product of the vector from
+			Pi to the sample point with the inward-facing normal of edge i. If the result is positive, the point is on the
+			inside of that edge (for counter-clockwise winding). A point is inside the triangle if and only if all three edge
+			functions have the same sign — all non-negative for CCW winding, or all non-positive for CW winding. To handle
+			both winding orders, my implementation accepts either case. Using \( \geq \) and \( \leq \) rather than strict
+			inequality ensures that samples exactly on an edge are drawn.
+		</p>
+
+		<p>
+			I sample at the center of each pixel, at coordinates \( (x + 0.5, y + 0.5) \), and call
+			<code>fill_pixel()</code> for each pixel that passes the inside test.
+		</p>
+
+		<p>
+			<b>Bounding box efficiency:</b> Before the sample loop, I compute the axis-aligned bounding box of the triangle
+			by taking the floor of the minimum and the ceiling of the maximum of all three vertices' coordinates, clamped to
+			the screen dimensions. The loop iterates only over pixels within this bounding box, so no pixels outside it are
+			ever tested. This makes the algorithm exactly as efficient as one that checks each sample within the bounding box.
+		</p>
+
+		<figure>
+			<img src="assets/task1_test4.png" width="600px"/>
+			<figcaption>Screenshot of basic/test4.svg with the pixel inspector centered on a thin triangle corner,
+			showing aliasing artifacts (jagged stairstep edges) at 1 sample per pixel.</figcaption>
+		</figure>
+
+		<h3>Extra Credit: Optimized Triangle Rasterization</h3>
+
+		<p>I implemented three optimizations over the basic bounding-box rasterizer:</p>
+
+		<p>
+			<b>1. Determine winding order once:</b> The basic version checks both <code>(all &ge; 0) || (all &le; 0)</code>
+			every pixel — 6 comparisons and 2 branches. Instead, I compute the signed area of the triangle using a cross
+			product before the loop. If the triangle is CW, I flip all edge coefficients so that "inside" is always the
+			non-negative side. The per-pixel test reduces to a single <code>(all &ge; 0)</code> check — 3 comparisons, 1 branch.
+		</p>
+
+		<p>
+			<b>2. Precompute edge coefficients in Ax + By + C form:</b> The basic version evaluates
+			<code>-(sx - Xi) * dYi + (sy - Yi) * dXi</code> from scratch per pixel — 6 multiplications and 6 subtractions.
+			By algebraically expanding this into \( L_i(x,y) = A_i x + B_i y + C_i \), the constants \( A_i, B_i, C_i \)
+			are computed once before the loop.
+		</p>
+
+		<p>
+			<b>3. Incremental evaluation:</b> Since \( L(x+1, y) = L(x, y) + A \) and \( L(x, y+1) = L(x, y) + B \),
+			I evaluate the full edge function only at the top-left corner of the bounding box, then step through the grid
+			using only additions. The inner loop performs <b>3 additions and 3 comparisons</b> per pixel, compared to the
+			basic version's 6 multiplications, 6 subtractions, and 6 comparisons.
+		</p>
+
+		<p>
+			Timing was measured using <code>clock()</code> around the <code>svg.draw()</code> call in
+			<code>DrawRend::redraw()</code>:
+		</p>
+
+		<div style="display: flex; justify-content: center;">
+			<table style="border-collapse: collapse; text-align: center;">
+				<tr style="background-color: #f0f0f0;">
+					<th style="border: 1px solid #ccc; padding: 8px;">Test</th>
+					<th style="border: 1px solid #ccc; padding: 8px;">Basic (ms)</th>
+					<th style="border: 1px solid #ccc; padding: 8px;">Optimized (ms)</th>
+					<th style="border: 1px solid #ccc; padding: 8px;">Speedup</th>
+				</tr>
+				<tr>
+					<td style="border: 1px solid #ccc; padding: 8px;">test3 (dragon)</td>
+					<td style="border: 1px solid #ccc; padding: 8px;">19</td>
+					<td style="border: 1px solid #ccc; padding: 8px;">12</td>
+					<td style="border: 1px solid #ccc; padding: 8px;">~37%</td>
+				</tr>
+				<tr>
+					<td style="border: 1px solid #ccc; padding: 8px;">test5 (cube)</td>
+					<td style="border: 1px solid #ccc; padding: 8px;">2</td>
+					<td style="border: 1px solid #ccc; padding: 8px;">1</td>
+					<td style="border: 1px solid #ccc; padding: 8px;">~50%</td>
+				</tr>
 			</table>
 		</div>
+
+		<p>
+			The dragon (test3) shows the clearest improvement because it has the most triangles. The other test files
+			rasterize too quickly for <code>clock()</code> to distinguish meaningful differences.
+		</p>
 		
 		<h2>Task 2: Antialiasing by Supersampling</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+
+		<p>
+			Supersampling reduces aliasing (jagged edges) by taking multiple samples per pixel and averaging them.
+			Instead of a single binary in-or-out decision per pixel, partial coverage is captured — a pixel half-covered
+			by a triangle edge gets a blended color, producing smooth gradients instead of harsh stairsteps.
+		</p>
+
+		<h3>Algorithm and Data Structures</h3>
+
+		<p>
+			The core data structure is <code>sample_buffer</code>, a 1D vector of <code>Color</code> objects with
+			<code>width &times; height &times; sample_rate</code> entries. For a pixel at (x, y), its subsamples
+			are stored at indices <code>(y &times; width + x) &times; sample_rate + s</code>, where s ranges from 0
+			to <code>sample_rate - 1</code>.
+		</p>
+
+		<p>I modified five functions in the rasterization pipeline:</p>
+
+		<p>
+			<b>1. <code>set_sample_rate()</code> and <code>set_framebuffer_target()</code></b> — both resize the
+			sample buffer to <code>width &times; height &times; sample_rate</code> so the buffer is correctly
+			sized when the sample rate or window dimensions change.
+		</p>
+
+		<p>
+			<b>2. <code>rasterize_triangle()</code></b> — instead of sampling once at the pixel center, the function
+			loops over a <code>sqrt(sample_rate) &times; sqrt(sample_rate)</code> grid within each pixel. For example,
+			at sample rate 4, a 2&times;2 grid produces sample points at offsets (0.25, 0.25), (0.75, 0.25),
+			(0.25, 0.75), and (0.75, 0.75) within the pixel. Each subsample that passes the edge function test is
+			written to its own slot in the sample buffer.
+		</p>
+
+		<p>
+			<b>3. <code>fill_pixel()</code></b> — used by points and lines, which are not supersampled. This function
+			fills all subsamples for a given pixel with the same color, so points and lines render correctly at any
+			sample rate.
+		</p>
+
+		<p>
+			<b>4. <code>resolve_to_framebuffer()</code></b> — after all primitives are rasterized, this function
+			averages all subsamples for each pixel into a single color and writes it to the framebuffer. A pixel
+			where 2 out of 4 subsamples are inside a red triangle produces a 50% red, 50% white blend.
+		</p>
+
+		<h3>Results</h3>
+
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse;">
+				<tr>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task2_1.png" width="100%"/>
+						<figcaption>Sample rate 1</figcaption>
+					</td>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task2_4.png" width="100%"/>
+						<figcaption>Sample rate 4</figcaption>
+					</td>
+				</tr>
+				<tr>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task2_16.png" width="100%"/>
+						<figcaption>Sample rate 16</figcaption>
+					</td>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task2_EC.png" width="100%"/>
+						<figcaption>Sample rate 4 (jittered)</figcaption>
+					</td>
+				</tr>
+			</table>
+		</div>
+
+		<p>
+			At sample rate 1, the thin red triangle shows harsh binary aliasing — each pixel is either fully red
+			or fully white, with visible gaps where the triangle is thinner than a pixel. At sample rate 4,
+			intermediate pink pixels appear along the edge where only some of the 2&times;2 subsamples fall inside,
+			producing a smoother result. At sample rate 16, the 4&times;4 grid captures even finer gradations of
+			coverage, yielding the smoothest edge. The improvement occurs because supersampling approximates the
+			true fractional area coverage of each pixel — the more samples, the finer the approximation.
+		</p>
+
+		<h3>Extra Credit: Jittered Sampling</h3>
+
+		<p>
+			I implemented jittered sampling as an alternative to grid supersampling. Instead of placing each subsample
+			at the exact center of its grid cell, jittered sampling adds a random offset within the cell. The samples
+			remain stratified (one per cell), but their irregular positions break up the regular aliasing patterns
+			that grid sampling can produce.
+		</p>
+
+		<p>
+			Comparing the two rate-4 images in the pixel inspector, grid sampling produces a regular stairstep pattern
+			along the thin red triangle. Jittered sampling replaces this with an irregular, noise-like pattern. While
+			both use the same number of samples, the jittered version avoids the repetitive structure that the human
+			eye easily picks up on, trading structured aliasing for less visually distracting random noise.
+		</p>
 
 		<h2>Task 3: Transforms</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
 
-		<h2>Task 4: Barycentric coordinates</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+		<p>
+			I implemented the three 2D homogeneous transformation matrices in <code>transforms.cpp</code>:
+			<code>translate</code> places the offset (dx, dy) in the third column,
+			<code>scale</code> puts (sx, sy) on the diagonal, and
+			<code>rotate</code> converts degrees to radians and builds the standard 2D rotation matrix.
+			These are composed via the hierarchical <code>&lt;g transform="..."&gt;</code> groups in the SVG file.
+		</p>
 
-		<h2>Task 5: "Pixel sampling" for texture mapping</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+		<figure>
+			<img src="assets/task3_robot.png" width="600px"/>
+			<figcaption>Custom cubeman waving and running. The left arm is raised (rotated 60°) with
+			the forearm bent (rotated −40°), and the legs are splayed in a stride (±15°).
+			Colors: blue body, orange head, green limbs.</figcaption>
+		</figure>
 
-		<h2>Task 6: "Level Sampling" with mipmaps for texture mapping</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+		<h2>Task 4: Barycentric Coordinates</h2>
 
-		<h2>(Optional) Task 7: Extra Credit - Draw Something Creative!</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+		<p>
+			Barycentric coordinates express a point inside a triangle as a weighted combination of the three vertices.
+			For a point (x, y) inside a triangle with vertices A, B, C, the barycentric coordinates (α, β, γ) satisfy
+			α + β + γ = 1, and the point equals α·A + β·B + γ·C. Each weight represents how close the point is to the
+			corresponding vertex — at vertex A, α = 1 and the others are 0; at the center, all three are roughly equal.
+		</p>
 
-		<h2>Additional Notes (please remove)</h2>
-		<ul>
-			<li>You can also add code if you'd like as so: <code>code code code</code></li>
-			<li>If you'd like to add math equations, 
-				<ul>
-					<li>You can write inline equations like so: \( a^2 + b^2 = c^2 \)</li>
-					<li>You can write display equations like so: \[ a^2 + b^2 = c^2 \]</li>
-				</ul>
-			</li>
-		</ul>
+		<p>
+			This is useful for smoothly interpolating any per-vertex attribute across the triangle. In the image below,
+			vertex A is red, B is blue, and C is green. At each pixel, the color is α·red + β·blue + γ·green, producing
+			a smooth gradient. Near the red vertex, α dominates so the color is mostly red. In the middle, all three
+			contribute equally, producing a dark blend.
+		</p>
+
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse;">
+				<tr>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task4_bary.png" width="100%"/>
+						<figcaption>RGB triangle showing barycentric interpolation</figcaption>
+					</td>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task4_test7.png" width="100%"/>
+						<figcaption>test7.svg color wheel at sample rate 1</figcaption>
+					</td>
+				</tr>
+			</table>
 		</div>
+
+		<h2>Task 5: "Pixel Sampling" for Texture Mapping</h2>
+
+		<p>
+			Pixel sampling determines how to look up a color from a texture image when the texture coordinate
+			falls between texel centers. For each screen-space sample point inside a textured triangle, I use
+			barycentric coordinates to interpolate the UV texture coordinates from the three vertices. These UV
+			coordinates map into the texture image, but they rarely land exactly on a texel — so we need a
+			sampling method to determine the color.
+		</p>
+
+		<p>
+			<b>Nearest sampling</b> rounds the UV coordinate to the closest texel and returns that texel's color.
+			This is fast but produces blocky, pixelated results at boundaries between differently-colored regions
+			in the texture.
+		</p>
+
+		<p>
+			<b>Bilinear sampling</b> finds the four texels surrounding the UV coordinate and blends them using
+			linear interpolation — first horizontally between the two pairs, then vertically between the results.
+			This produces smoother transitions at the cost of reading four texels instead of one.
+		</p>
+
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse;">
+				<tr>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task5_nearest1.png" width="100%"/>
+						<figcaption>Nearest, sample rate 1</figcaption>
+					</td>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task5_nearest16.png" width="100%"/>
+						<figcaption>Nearest, sample rate 16</figcaption>
+					</td>
+				</tr>
+				<tr>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task5_bilinear1.png" width="100%"/>
+						<figcaption>Bilinear, sample rate 1</figcaption>
+					</td>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/task5_bilinear16.png" width="100%"/>
+						<figcaption>Bilinear, sample rate 16</figcaption>
+					</td>
+				</tr>
+			</table>
+		</div>
+
+		<p>
+			The difference between nearest and bilinear sampling is most visible at sample rate 1 along the
+			coastline where ocean meets land. Nearest sampling produces blocky, jagged transitions between
+			the blue water and tan land texels, while bilinear sampling blends these into smoother gradients.
+			The white latitude/longitude grid lines also appear smoother with bilinear sampling. At sample
+			rate 16, both methods improve because supersampling itself averages out the harsh transitions,
+			but bilinear still produces a slightly cleaner result.
+		</p>
+
+		<p>
+			In general, the largest difference between the two methods occurs when the texture is being
+			magnified (displayed larger than its native resolution), so that each screen pixel maps to a
+			sub-texel region. In that case, nearest sampling snaps to one texel producing visible blockiness,
+			while bilinear smoothly interpolates. When the texture is at its native resolution or being
+			minified, the difference is less noticeable.
+		</p>
+
+		<h2>Task 6: "Level Sampling" with Mipmaps for Texture Mapping</h2>
+
+		<p>
+			Level sampling selects which mipmap level to sample from based on how much the texture is being
+			minified at each pixel. When a large region of the texture maps to a small screen area, sampling
+			from the full-resolution texture causes aliasing — high-frequency detail that can't be represented
+			at the output resolution produces noisy artifacts. Mipmaps are pre-filtered, progressively smaller
+			copies of the texture. By choosing the right level, we sample from a version of the texture that
+			has already been filtered to match the screen-space footprint of each pixel.
+		</p>
+
+		<p>
+			To compute the mipmap level, I calculate the UV coordinates at three points: the sample (x, y),
+			its neighbor (x+1, y), and (x, y+1). The difference vectors tell us how fast the UV coordinates
+			change per screen pixel. I scale these by the texture dimensions, take the length of each, and
+			use the log₂ of the larger one as the continuous mipmap level. With L_NEAREST this rounds to the
+			nearest integer level; with L_LINEAR it interpolates between the two adjacent levels.
+		</p>
+
+		<h3>Tradeoffs Between Sampling Techniques</h3>
+
+		<p>
+			<b>Pixel sampling</b> (nearest vs bilinear): nearest is fastest — one texel lookup per sample — but
+			produces blocky textures. Bilinear reads four texels and blends, costing roughly 4× the memory
+			accesses but producing smoother results. No extra memory beyond the texture itself.
+		</p>
+
+		<p>
+			<b>Level sampling</b> (L_ZERO vs L_NEAREST vs L_LINEAR): L_ZERO always uses the full-resolution
+			texture — fast but aliases when minifying. L_NEAREST picks one mipmap level per sample, adding
+			the cost of computing the level but effectively eliminating minification aliasing. L_LINEAR samples
+			two adjacent levels and blends, doubling the texture lookups but producing the smoothest result.
+			Mipmaps cost an extra 1/3 of the original texture's memory.
+		</p>
+
+		<p>
+			<b>Supersampling</b>: the most powerful antialiasing but the most expensive — 16× supersampling
+			does 16× the work and uses 16× the sample buffer memory. It handles all types of aliasing
+			(edges and textures) but is much slower than combining bilinear sampling with mipmapping, which
+			achieves comparable texture quality at a fraction of the cost.
+		</p>
+
+		<h3>Results</h3>
+
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse;">
+				<tr>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/L_zero_P_nearest.png" width="100%"/>
+						<figcaption>L_ZERO, P_NEAREST</figcaption>
+					</td>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/L_zero_P_linear.png" width="100%"/>
+						<figcaption>L_ZERO, P_LINEAR</figcaption>
+					</td>
+				</tr>
+				<tr>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/L_nearest_P_nearest.png" width="100%"/>
+						<figcaption>L_NEAREST, P_NEAREST</figcaption>
+					</td>
+					<td style="text-align: center; padding: 8px;">
+						<img src="assets/L_nearest_P_linear.png" width="100%"/>
+						<figcaption>L_NEAREST, P_LINEAR</figcaption>
+					</td>
+				</tr>
+			</table>
+		</div>
+
+		<p>
+			With L_ZERO and P_NEAREST, the pixel inspector shows noisy, speckled pixels where the facade's
+			fine geometric pattern is being minified. Switching to P_LINEAR (bilinear) softens the texels
+			slightly but the fundamental aliasing from sampling the full-resolution texture remains. With
+			L_NEAREST, the renderer selects an appropriately pre-filtered mipmap level, dramatically reducing
+			the noise. Combining L_NEAREST with P_LINEAR produces the smoothest result — the mipmap eliminates
+			minification aliasing while bilinear interpolation smooths the remaining texel boundaries.
+		</p>
+
+		<h2>Extra Credit: Generative City Grid</h2>
+
+		<p>
+			I wrote a Python script (<code>generate_city.py</code>) that procedurally generates a bird's-eye
+			view of a nighttime city. The script creates an 8×8 grid of city blocks separated by dark streets,
+			with each block subdivided into randomly sized buildings. Four district palettes are assigned based
+			on position: warm reds and oranges for the downtown core, cool blues and teals for the business
+			district, modern purples at the edges, and occasional green parks with hexagonal trees. Building
+			brightness varies with randomly assigned "height" — taller buildings appear brighter, as if lit up
+			at night. Small yellow and white squares represent lit windows, and hexagonal street lights mark
+			intersections.
+		</p>
+
+		<figure>
+			<img src="assets/competition.png" width="600px"/>
+			<figcaption>Procedurally generated nighttime city grid, 800×800 pixels.</figcaption>
+		</figure>
 	</body>
 </html>
